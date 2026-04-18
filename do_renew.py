@@ -227,45 +227,53 @@ async def login(page, cdp, context, email, password):
         pass
     return False
 
+
 async def get_domains(page, cdp):
-    log("获取域名列表 (监听网络请求 - 最终修复版)...")
+    log("获取域名列表 (监听网络请求 - 精确匹配版)...")
     
-    # 1. 定义一个变量，用于在回调函数中暂存捕获到的 Response 对象
     target_response = None
 
-    # 2. 定义回调函数 (这里不能用 await，所以只做判断 URL 和记录对象的工作)
     def capture_response(response):
         nonlocal target_response
         url = response.url
         
-        # 检查 URL 是否符合 API 特征 (根据实际接口调整)
+        # 修复点：更精确地匹配 API 路径
+        # 去掉 'domains' in url 这种过于宽泛的判断
+        # 添加更具体的 API 路径特征
         if ('/api/' in url and ('domain' in url.lower() or 'list' in url.lower())) or \
-           ('domains' in url) or ('getdomains' in url.lower()):
+           ('/rpc/' in url) or \
+           ('/query/' in url and 'domain' in url.lower()) or \
+           ('getdomains' in url.lower()) or \
+           ('fetch' in url.lower() and 'domain' in url.lower()):
             
-            # 只记录这个 Response 对象，不读取内容
             target_response = response
             log(f"🔍 捕获到疑似 API 请求: {url}")
 
     try:
-        # 3. 开始监听
         page.on("response", capture_response)
 
-        # 4. 访问页面 (触发网络请求)
         await page.goto("https://dash.domain.digitalplat.org/domains")
-        await asyncio.sleep(5) # 等待请求完成
+        await asyncio.sleep(6) # 延长等待时间，确保 API 请求完成
 
-        # 5. 监听结束后，检查是否捕获到了对象
-        # 现在我们在 async 函数里，可以安全使用 await 了
         if target_response is not None:
-            response_text = await target_response.text() # ✅ 这里可以 await 了
+            response_text = await target_response.text()
             
             if not response_text:
                 log("API 响应为空")
                 return []
 
-            data = json.loads(response_text)
-            
-            # 6. 解析逻辑 (使用安全的 if-elif)
+            # 修复点：增加对响应内容的检查，防止解析 HTML
+            if '<!DOCTYPE html>' in response_text or '<html' in response_text:
+                log(f"⚠️ API 响应是 HTML，不是 JSON: {target_response.url}")
+                return []
+
+            try:
+                data = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                log(f"❌ JSON 解析失败: {e}")
+                log(f"响应内容 (前 200 字符): {response_text[:200]}...")
+                return []
+
             domains_in_response = None
             if isinstance(data, dict):
                 if 'domains' in data:
@@ -283,8 +291,11 @@ async def get_domains(page, cdp):
                 domains_list = [item['name'] for item in domains_in_response if 'name' in item]
                 log(f"✅ 成功解析出 {len(domains_list)} 个域名: {domains_list}")
                 return domains_list
+            else:
+                log("✅ 捕获到 API 响应，但未找到域名列表字段")
+                # 可以打印整个 data 结构，方便调试
+                # log(f"响应数据结构: {json.dumps(data, indent=2)[:500]}...")
 
-        # 如果没找到
         log("❌ 未能从 API 获取域名数据")
         return []
 
@@ -292,11 +303,11 @@ async def get_domains(page, cdp):
         log(f"❌ 获取域名时发生异常: {e}")
         return []
     finally:
-        # 移除监听器 (兼容性写法)
         try:
             page.off("response", capture_response)
         except:
             pass
+
 async def renew_domain(page, cdp, domain):
     log(f"\n{'='*50}")
     log(f"处理域名: {domain}")

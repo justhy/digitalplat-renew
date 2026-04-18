@@ -228,6 +228,85 @@ async def login(page, cdp, context, email, password):
     return False
 
 async def get_domains(page, cdp):
+    log("获取域名列表 (监听网络请求 - 最终版)...")
+
+    # 用于存储捕获到的域名数据
+    captured_domains = None
+
+    # 1. 定义回调函数 (这里不能用 await，所以只做记录 URL 的工作)
+    def handle_response(response):
+        nonlocal captured_domains
+        url = response.url
+        
+        # 检查 URL 是否符合 API 特征
+        if ('/api/' in url and ('domain' in url.lower() or 'list' in url.lower())) or \
+           ('domains' in url) or ('getdomains' in url.lower()):
+            
+            # 标记这个 Response 需要被后续处理
+            # 我们不在这解析，只记录这个 Response 对象
+            nonlocal target_response
+            target_response = response
+            log(f"🔍 捕获到疑似 API 请求: {url}")
+
+    # 临时变量，用于在回调和主逻辑间传递 Response 对象
+    target_response = None
+
+    try:
+        # 2. 监听事件
+        page.on("response", handle_response)
+
+        # 3. 访问页面
+        await page.goto("https://dash.domain.digitalplat.org/domains")
+        await asyncio.sleep(5)
+
+        # 4. 事件监听器无法直接传回数据，我们在这里检查 target_response
+        if target_response is not None:
+            try:
+                # 修复点：现在我们在 async 函数里，可以安全使用 await 了
+                response_text = await target_response.text()
+                if not response_text:
+                    log("API 响应为空")
+                    return []
+
+                data = json.loads(response_text)
+
+                # 解析逻辑 (使用安全的 if-elif)
+                domains_in_response = None
+                if isinstance(data, dict):
+                    if 'domains' in data:
+                        domains_in_response = data['domains']
+                    elif 'initialDomains' in data:
+                        domains_in_response = data['initialDomains']
+                    elif isinstance(data.get('data'), dict) and 'domains' in data['data']:
+                        domains_in_response = data['data']['domains']
+                    elif 'items' in data:
+                        domains_in_response = data['items']
+                elif isinstance(data, list) and len(data) > 0 and 'name' in data[0]:
+                    domains_in_response = data
+
+                if domains_in_response and isinstance(domains_in_response, list):
+                    domains_list = [item['name'] for item in domains_in_response if 'name' in item]
+                    log(f"✅ 成功解析出 {len(domains_list)} 个域名")
+                    return domains_list
+
+            except json.JSONDecodeError as e:
+                log(f"JSON 解析失败: {e}")
+            except Exception as e:
+                log(f"处理响应时出错: {e}")
+
+        # 如果上面没找到
+        log("❌ 未能从 API 获取域名数据")
+        return []
+
+    except Exception as e:
+        log(f"❌ 获取域名时发生异常: {e}")
+        return []
+    finally:
+        # 移除监听器 (兼容性写法)
+        try:
+            page.off("response", handle_response)
+        except:
+            pass
     log("获取域名列表 (监听网络请求 - 修复版)...")
     
     api_response_data = None

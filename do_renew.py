@@ -249,13 +249,20 @@ async def get_domains(page, cdp):
                 
                 # 检查响应中是否包含域名数据
                 # 常见的字段名：domains, initialDomains, data.domains, items
-                domains_in_response = (
-                    data.get('domains') or 
-                    data.get('initialDomains') or
-                    data.get('data', {}).get('domains') or
-                    data.get('items') or
-                    (data if isinstance(data, list) and len(data) > 0 and 'name' in data[0])
-                )
+                domains_in_response = None
+        
+                # 1. 检查标准字段
+                if 'domains' in data:
+                    domains_in_response = data['domains']
+                elif 'initialDomains' in data:
+                    domains_in_response = data['initialDomains']
+                elif isinstance(data.get('data'), dict) and 'domains' in data['data']:
+                    domains_in_response = data['data']['domains']
+                elif 'items' in data:
+                    domains_in_response = data['items']
+                # 2. 检查整个 data 是否就是列表
+                elif isinstance(data, list) and len(data) > 0 and 'name' in data[0]:
+                    domains_in_response = data
                 
                 if domains_in_response and isinstance(domains_in_response, list):
                     # 找到了！存储数据并停止监听

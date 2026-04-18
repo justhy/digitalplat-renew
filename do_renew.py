@@ -228,6 +228,81 @@ async def login(page, cdp, context, email, password):
     return False
 
 async def get_domains(page, cdp):
+    log("获取域名列表 (监听网络请求 - 修复版)...")
+    
+    api_response_data = None
+
+    # 定义回调函数
+    def handle_response(response):
+        nonlocal api_response_data
+        url = response.url
+        
+        # 检查是否为可能的域名 API
+        if ('/api/' in url and ('domain' in url.lower() or 'list' in url.lower())) or \
+           ('domains' in url) or ('getdomains' in url.lower()):
+            try:
+                # 修复点 1: 必须使用 await 来获取响应文本
+                response_text = await response.text()
+                
+                # 修复点 2: 确保文本不为空
+                if not response_text:
+                    return
+                
+                data = json.loads(response_text)
+                
+                # 修复点 3: 使用标准 if-elif 逻辑（避免之前的语法错误）
+                domains_in_response = None
+                if 'domains' in data:
+                    domains_in_response = data['domains']
+                elif 'initialDomains' in data:
+                    domains_in_response = data['initialDomains']
+                elif isinstance(data.get('data'), dict) and 'domains' in data['data']:
+                    domains_in_response = data['data']['domains']
+                elif 'items' in data:
+                    domains_in_response = data['items']
+                elif isinstance(data, list) and len(data) > 0 and 'name' in data[0]:
+                    domains_in_response = data
+
+                if domains_in_response and isinstance(domains_in_response, list):
+                    api_response_data = domains_in_response
+                    log(f"🔍 捕获域名数据，共 {len(domains_in_response)} 个")
+                    
+            except json.JSONDecodeError:
+                pass
+            except Exception as e:
+                log(f"⚠️ 处理响应时出错: {e}")
+
+    try:
+        # 修复点 4: Playwright 事件监听兼容性处理
+        # 新版本 Playwright 推荐使用 add_listener，但为了兼容性，我们使用 try-except
+        # 或者直接不移除，因为 context 关闭时会自动清理
+        page.on("response", handle_response)
+
+        await page.goto("https://dash.domain.digitalplat.org/domains")
+        await asyncio.sleep(6) # 等待足够时间让 API 返回
+
+        # 修复点 5: 移除监听器的兼容写法
+        # 如果报错 page.off 不存在，我们可以忽略，或者使用 remove_listener
+        # 这里为了防止报错，我们直接跳过移除步骤，或者用 hasattr 判断
+        # 因为 Python 的垃圾回收机制，通常不会造成严重后果
+        try:
+            page.remove_listener("response", handle_response)
+        except AttributeError:
+            # 兼容旧版本或特殊情况
+            pass
+
+        # 检查结果
+        if api_response_data:
+            domains_list = [item['name'] for item in api_response_data if 'name' in item]
+            log(f"✅ 成功获取域名: {domains_list}")
+            return domains_list
+        else:
+            log("❌ 未能监听到域名 API 数据")
+            return []
+
+    except Exception as e:
+        log(f"❌ 获取域名异常: {e}")
+        return []
     log("获取域名列表 (监听网络请求 - 最新策略)...")
 
     api_response_data = None

@@ -228,62 +228,88 @@ async def login(page, cdp, context, email, password):
     return False
 
 async def get_domains(page, cdp):
-    log("获取域名列表 (新版 Next.js 解析)...")
+    log("获取域名列表 (新版 Next.js 解析 - 尝试多种策略)...")
     
-    # 1. 直接获取页面 HTML 源码
-    # 因为是 SPA，数据通常在初始化时就注入在 script 标签里
+    # 1. 获取页面 HTML 源码
     try:
         await page.goto("https://dash.domain.digitalplat.org/domains")
-        await asyncio.sleep(5) # 等待页面加载
+        await asyncio.sleep(5) # 等待页面完全加载和 JS 执行
         
         # 获取页面内容
         content = await page.content()
         
-        # 2. 正则匹配关键数据块
-        # Next.js 13+ 通常会将数据 push 到 self.__next_f 队列中
-        # 我们寻找包含 "initialDomains" 的那个数据块
-        # 这个正则匹配 push 数组中的 JSON 字符串部分
+        # 2. 策略一：尝试查找 __NEXT_DATA__ 标签 (常见于 Next.js SSR)
+        log("尝试策略一：查找 __NEXT_DATA__ 标签...")
+        next_data_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*)</script>', content)
+        if next_data_match:
+            try:
+                next_data_json = next_data_match.group(1)
+                next_data = json.loads(next_data_json)
+                
+                # 查找 props.pageProps.initialDomains 或类似路径
+                # 这是 Next.js SSR 传递数据的标准方式
+                props = next_data.get('props', {})
+                page_props = props.get('pageProps', {})
+                
+                # 尝试多个可能的路径
+                initial_domains = (
+                    page_props.get('initialDomains') or 
+                    page_props.get('domains') or
+                    page_props.get('data', {}).get('domains') or
+                    page_props.get('initialData', {}).get('domains')
+                )
+                
+                if initial_domains and isinstance(initial_domains, list):
+                    domains_list = [item['name'] for item in initial_domains if 'name' in item]
+                    log(f"✅ 策略一成功，找到 {len(domains_list)} 个域名: {domains_list}")
+                    return domains_list
+                else:
+                    log("❌ 策略一失败：__NEXT_DATA__ 中未找到预期的域名字段")
+                    
+            except json.JSONDecodeError as e:
+                log(f"❌ 策略一 JSON 解析失败: {e}")
+        
+        # 3. 策略二：尝试查找 self.__next_f.push 数据块 (之前的策略)
+        log("尝试策略二：查找 self.__next_f.push 数据块...")
         pattern = r'self\.__next_f\.push\(\[\d+,"[\s\S]*?\\\"initialDomains\\\"\\:(\[.*?\\\])'
         match = re.search(pattern, content, re.DOTALL)
         
-        if not match:
-            log("❌ 正则匹配失败：未找到 initialDomains 数据块")
-            log("可能是未登录状态，或者页面结构再次变动")
-            return []
-            
-        # 3. 清理并解析 JSON
-        json_str_dirty = match.group(1)
+        if match:
+            try:
+                json_str_dirty = match.group(1)
+                # 处理 JavaScript 转义字符
+                json_str_step1 = bytes(json_str_dirty, "utf-8").decode("unicode_escape")
+                domains_data = json.loads(f'"{json_str_step1}"')
+                
+                if isinstance(domains_data, str):
+                    inner_data = json.loads(domains_data)
+                    domains_list = [item['name'] for item in inner_data if 'name' in item]
+                else:
+                    domains_list = [item['name'] for item in domains_data if 'name' in item]
+                
+                log(f"✅ 策略二成功，找到 {len(domains_list)} 个域名: {domains_list}")
+                return domains_list
+                
+            except Exception as e:
+                log(f"❌ 策略二解析失败: {e}")
         
-        # 处理 JavaScript 转义字符 (将 \" 转回 ", \\ 转回 \)
-        # 这是一个处理双重转义的技巧
-        try:
-            # 第一次解码：处理 Python 层面的转义
-            json_str_step1 = bytes(json_str_dirty, "utf-8").decode("unicode_escape")
-            # 第二次解码：因为 Next.js 的传输格式，可能还需要再处理一次
-            # 有时候直接 json.loads(json_str_step1) 就可以了
-            domains_data = json.loads(f'"{json_str_step1}"')
-            
-            # 如果上面报错，尝试直接解析 (根据实际源码结构调整)
-            # domains_data = json.loads(json_str_step1)
-            
-        except Exception as e:
-            log(f"❌ JSON 解析异常: {e}")
-            # 打印部分字符串供调试
-            log(f"尝试解析的字符串片段: {json_str_dirty[:200]}")
-            return []
-
-        # 4. 提取域名
-        # 确保是列表格式
-        if isinstance(domains_data, str):
-            # 如果还是字符串，说明里面还有一层 JSON
-            inner_data = json.loads(domains_data)
-            domains_list = [item['name'] for item in inner_data if 'name' in item]
-        else:
-            # 如果直接是列表
-            domains_list = [item['name'] for item in domains_data if 'name' in item]
-
-        log(f"✅ 成功解析到 {len(domains_list)} 个域名: {domains_list}")
-        return domains_list
+        # 4. 策略三：直接在页面中搜索域名（作为最后手段）
+        # 查找常见的域名后缀，看是否有硬编码的域名
+        log("尝试策略三：在页面中搜索域名...")
+        domain_pattern = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,})')
+        potential_matches = domain_pattern.findall(content)
+        # 过滤掉常见的无效域名和链接
+        valid_domains = [d for d in potential_matches if not d.startswith(('http', 'www.', 'cdn-', 'static-', 'api.'))]
+        
+        if valid_domains:
+            unique_domains = list(set(valid_domains)) # 去重
+            log(f"⚠️ 策略三找到潜在域名 (可能不准确): {unique_domains}")
+            # 这种方式准确性较低，可以根据实际情况决定是否返回
+            # return unique_domains
+        
+        # 5. 如果所有策略都失败
+        log("❌ 所有策略均失败，未能找到域名数据")
+        return []
         
     except Exception as e:
         log(f"❌ 获取域名时发生异常: {e}")

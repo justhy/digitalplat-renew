@@ -19,7 +19,7 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 
 # ==================== 从环境变量加载配置 ====================
-ACCOUNTS_STR = os.environ.get('DOMAIN_ACCOUNT', '')
+ACCOUNTS_STR = os.environ["DOMAIN_ACCOUNT"]
 
 SESSION_DIR = Path(__file__).parent / "sessions"
 LOG_FILE = Path(__file__).parent / f"renew_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"

@@ -228,6 +228,72 @@ async def login(page, cdp, context, email, password):
     return False
 
 async def get_domains(page, cdp):
+    log("获取域名列表 (监听网络请求 - 最新策略)...")
+
+    api_response_data = None
+
+    # 定义一个回调函数来监听响应
+    def handle_response(response):
+        nonlocal api_response_data
+        # 检查 URL 是否包含域名相关的 API 路径
+        url = response.url
+        # 这些是常见的 API 路径模式，可根据实际抓包结果调整
+        if ('/api/' in url and ('domain' in url.lower() or 'list' in url.lower())) or \
+           ('domains' in url) or \
+           ('getdomains' in url.lower()) or \
+           ('fetch' in url.lower() and 'domain' in url.lower()):
+            try:
+                response_text = response.text() # 获取响应体
+                # 尝试解析 JSON
+                data = json.loads(response_text)
+                
+                # 检查响应中是否包含域名数据
+                # 常见的字段名：domains, initialDomains, data.domains, items
+                domains_in_response = (
+                    data.get('domains') or 
+                    data.get('initialDomains') or
+                    data.get('data', {}).get('domains') or
+                    data.get('items') or
+                    (data if isinstance(data, list) and len(data) > 0 and 'name' in data[0])
+                )
+                
+                if domains_in_response and isinstance(domains_in_response, list):
+                    # 找到了！存储数据并停止监听
+                    api_response_data = domains_in_response
+                    log(f"🔍 发现域名API响应: {url}")
+                    # 不需要显式停止，我们会在 page.goto 后处理结果
+            except json.JSONDecodeError:
+                # 如果不是 JSON，忽略
+                pass
+            except Exception as e:
+                log(f"⚠️ 处理API响应时出错: {e}")
+
+    try:
+        # 1. 监听页面的响应事件
+        page.on("response", handle_response)
+
+        # 2. 访问域名页面，触发 API 请求
+        await page.goto("https://dash.domain.digitalplat.org/domains")
+        await asyncio.sleep(5) # 等待 API 请求完成
+
+        # 3. 移除监听器
+        page.off("response", handle_response)
+
+        # 4. 检查是否捕获到数据
+        if api_response_data:
+            domains_list = [item['name'] for item in api_response_data if 'name' in item]
+            log(f"✅ 通过API监听成功找到 {len(domains_list)} 个域名: {domains_list}")
+            return domains_list
+        else:
+            log("❌ 未能监听到包含域名的 API 响应")
+            # 可选：打印所有请求 URL 以便调试
+            # all_requests = [r.url for r in page.get_requests()] # Playwright 不直接支持此方法
+            # log(f"所有请求URL: {all_requests}")
+            return []
+
+    except Exception as e:
+        log(f"❌ 获取域名时发生异常: {e}")
+        return []
     log("获取域名列表 (新版 Next.js 解析 - 尝试多种策略)...")
     
     # 1. 获取页面 HTML 源码

@@ -25,9 +25,9 @@ jobs:
       - name: Create .env
         run: |
           cat > .env << EOF
-          DOMAIN_ACCOUNT=${{ secrets.DOMAIN_ACCOUNT }}
-          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          DOMAIN_ACCOUNT: ${{ secrets.DOMAIN_ACCOUNT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
       
       - name: Restore sessions
